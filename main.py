@@ -1,125 +1,251 @@
 import os
-import shutil
-import psutil
+import sys
+import subprocess
+import importlib
 import time
-from datetime import datetime
+import shutil
 import threading
+from datetime import datetime
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 
-# -----------------------------
-# Constants
-# -----------------------------
+# -------------------------------
+# auto install package
+# -------------------------------
+required = ["psutil"]
+
+for p in required:
+    try:
+        importlib.import_module(p)
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", p])
+
+import psutil
+
+# -------------------------------
+# constants
+# -------------------------------
 REPORT_FILE = "testo 184 measurement report.pdf"
 CONFIG_FILE = "testo-184-T3-configuration_data.xml"
+WHOAMI_FILE = "whoami.txt"
 
-# Folder containing pre-generated XML templates
-CONFIG_TEMPLATE_FOLDER = "config_templates"
-
-# Folder where reports will be archived
 ARCHIVE_FOLDER = "reports_archive"
+CONFIG_FOLDER = "config_templates"
 
-# Background scan interval (seconds)
-SCAN_INTERVAL = 5
+SCAN_INTERVAL = 3
 
-# -----------------------------
-# Ensure folders exist
-# -----------------------------
-os.makedirs(CONFIG_TEMPLATE_FOLDER, exist_ok=True)
 os.makedirs(ARCHIVE_FOLDER, exist_ok=True)
 
-# Pick one XML template (you can have multiple for different presets)
-TEMPLATE_XML = os.path.join(CONFIG_TEMPLATE_FOLDER, CONFIG_FILE)
+CONFIG_TEMPLATE = os.path.join(CONFIG_FOLDER, CONFIG_FILE)
 
-if not os.path.exists(TEMPLATE_XML):
-    print(f"Error: Please place a valid pre-generated XML in {TEMPLATE_XML}")
-    exit(1)
-
-# -----------------------------
-# Detect logger USB
-# -----------------------------
+# -------------------------------
+# device detection
+# -------------------------------
 def find_testo_device():
+
     for p in psutil.disk_partitions():
-        if os.path.exists(os.path.join(p.mountpoint, REPORT_FILE)):
-            return p.mountpoint
+
+        try:
+            if os.path.exists(os.path.join(p.mountpoint, REPORT_FILE)):
+                return p.mountpoint
+        except:
+            pass
+
     return None
 
-# -----------------------------
-# Archive report with timestamp
-# -----------------------------
-def archive_report(device):
+
+# -------------------------------
+# read whoami
+# -------------------------------
+def read_whoami(device):
+
+    path = os.path.join(device, WHOAMI_FILE)
+
+    if not os.path.exists(path):
+        return None, None
+
+    device_id = "Unknown"
+    location = "Unknown"
+
+    with open(path) as f:
+
+        for line in f:
+
+            line = line.strip()
+
+            if line.lower().startswith("device"):
+                device_id = line.split(":")[1].strip()
+
+            elif line.lower().startswith("location"):
+                location = line.split(":")[1].strip()
+
+    return device_id, location
+
+
+# -------------------------------
+# archive report
+# -------------------------------
+def archive_report(device, device_id, location):
+
     src = os.path.join(device, REPORT_FILE)
-    if os.path.exists(src):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dst_name = f"{timestamp}_Testo184_Report.pdf"
-        dst = os.path.join(ARCHIVE_FOLDER, dst_name)
-        shutil.copy(src, dst)
-        print(f"[INFO] Report archived: {dst}")
 
-# -----------------------------
-# Copy XML config to logger
-# -----------------------------
-def copy_config_to_logger(device):
+    if not os.path.exists(src):
+        return
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    name = f"{timestamp}_{device_id}_{location}_Testo184_Report.pdf"
+
+    dst = os.path.join(ARCHIVE_FOLDER, name)
+
+    shutil.copy(src, dst)
+
+    print("Archived:", dst)
+
+
+# -------------------------------
+# copy config
+# -------------------------------
+def copy_config(device):
+
     dst = os.path.join(device, CONFIG_FILE)
-    shutil.copy(TEMPLATE_XML, dst)
-    print(f"[INFO] Configuration copied to logger: {dst}")
 
-# -----------------------------
-# Background scanner
-# -----------------------------
-device_connected = False
+    shutil.copy(CONFIG_TEMPLATE, dst)
 
-def background_scan():
-    global device_connected
-    while True:
-        device = find_testo_device()
-        if device and not device_connected:
-            print(f"[INFO] Logger detected at {device}")
-            device_connected = True
+    print("Configuration copied")
 
-            # Archive report
-            archive_report(device)
 
-            # Copy XML config
-            copy_config_to_logger(device)
+# -------------------------------
+# GUI app
+# -------------------------------
+class App:
 
-            # Prompt user to remove USB
+    def __init__(self, root):
+
+        self.root = root
+        self.device_connected = False
+        self.current_device = None
+
+        root.title("Testo 184 Auto Manager")
+        root.geometry("520x250")
+
+        self.status = tk.StringVar()
+        self.status.set("Waiting for logger...")
+
+        tk.Label(root,
+                 text="Testo 184 Logger Manager",
+                 font=("Arial",16)).pack(pady=10)
+
+        tk.Label(root,
+                 textvariable=self.status,
+                 font=("Arial",12)).pack(pady=10)
+
+        tk.Label(root,
+                 text="Reports archived automatically").pack()
+
+        tk.Label(root,
+                 text="Configuration applied automatically").pack()
+
+        tk.Label(root,
+                 text="whoami.txt created if missing").pack()
+
+        threading.Thread(target=self.monitor, daemon=True).start()
+
+        self.update_status()
+
+
+    # -----------------------
+    # background monitor
+    # -----------------------
+    def monitor(self):
+
+        while True:
+
+            device = find_testo_device()
+
+            if device and not self.device_connected:
+
+                self.device_connected = True
+                self.current_device = device
+
+                self.root.after(0, self.handle_device)
+
+            elif not device:
+
+                self.device_connected = False
+
+            time.sleep(SCAN_INTERVAL)
+
+
+    # -----------------------
+    # handle device in GUI
+    # -----------------------
+    def handle_device(self):
+
+        device = self.current_device
+
+        device_id, location = read_whoami(device)
+
+        if device_id is None:
+
             messagebox.showinfo(
-                "Configuration Applied",
-                "Logger configured and report archived.\nPlease safely remove/unplug the USB device."
+                "Device Setup",
+                "whoami.txt not found.\nPlease enter device information."
             )
 
-        elif not device:
-            device_connected = False
-        time.sleep(SCAN_INTERVAL)
+            device_id = simpledialog.askstring(
+                "Device ID",
+                "Enter Device ID: (e.g. Freezer1, Fridge2, etc.)"
+            )
 
-# -----------------------------
-# Simple GUI for status
-# -----------------------------
+            location = simpledialog.askstring(
+                "Location",
+                "Enter Location: (e.g. Acid, Caustic, Solvent etc.)"
+            )
+
+            if not device_id:
+                device_id = "Unknown"
+
+            if not location:
+                location = "Unknown"
+
+            path = os.path.join(device, WHOAMI_FILE)
+
+            with open(path, "w") as f:
+
+                f.write(f"Device: {device_id}\n")
+                f.write(f"Location: {location}\n")
+
+        archive_report(device, device_id, location)
+
+        copy_config(device)
+
+        messagebox.showinfo(
+            "Complete",
+            "Report archived and configuration applied.\n\nPlease unplug the USB logger."
+        )
+
+
+    # -----------------------
+    # status display
+    # -----------------------
+    def update_status(self):
+
+        device = find_testo_device()
+
+        if device:
+            self.status.set(f"Logger detected: {device}")
+        else:
+            self.status.set("Waiting for logger...")
+
+        self.root.after(2000, self.update_status)
+
+
+# -------------------------------
+# start program
+# -------------------------------
 root = tk.Tk()
-root.title("Testo 184 T3 Auto Manager")
-root.geometry("500x220")
 
-status_var = tk.StringVar()
-status_var.set("Waiting for logger...")
-
-def update_status():
-    device = find_testo_device()
-    if device:
-        status_var.set(f"Logger detected: {device}")
-    else:
-        status_var.set("Waiting for logger...")
-    root.after(2000, update_status)
-
-tk.Label(root, textvariable=status_var, font=("Arial", 14)).pack(pady=20)
-tk.Label(root, text="Reports archived in 'reports_archive'", font=("Arial", 10)).pack()
-tk.Label(root, text="Configuration copied automatically", font=("Arial", 10)).pack()
-tk.Label(root, text="You will be prompted to remove USB after configuration", font=("Arial", 10)).pack(pady=10)
-
-# -----------------------------
-# Start background scanner in thread
-# -----------------------------
-threading.Thread(target=background_scan, daemon=True).start()
-update_status()
+app = App(root)
 
 root.mainloop()
