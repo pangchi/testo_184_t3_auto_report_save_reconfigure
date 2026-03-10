@@ -195,7 +195,7 @@ class App:
 
             device_id = simpledialog.askstring(
                 "Device ID",
-                "Enter Device ID: (e.g. Freezer1, Fridge2, etc.)"
+                "Enter Device ID: (e.g. Cabinet, Freezer1, Fridge2, etc.)"
             )
 
             location = simpledialog.askstring(
